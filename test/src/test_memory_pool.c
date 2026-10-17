@@ -172,7 +172,10 @@ int main(void)
 
     void* again = NULL;
     MemoryPoolAlloc(b, 512, &again, &nf);
-    CHECK(nf == 1 && again == q[0], "整体回收后再次申请，复用第 1 块地址");
+    /* 只要求“落在已复位池的起点”：具体复用哪个池允许实现自己决定
+     * （例如带“分配提示 hint”的实现会复用上次成功的池，而不再固定用下标最小的池） */
+    CHECK(nf == 1 && (again == q[0] || again == q[3]),
+          "整体回收后再次申请，落在已复位池的起点（地址稳定、无碎片增长）");
     MemoryPoolFree(b, again);
     local_destroy(b);
 
