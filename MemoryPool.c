@@ -55,6 +55,8 @@ int MemoryEntryFree(Memory_Entry* e,bool* Cleaned){
 
 
 int MemoryPoolInit(Memory_Pool** p,int perSize,int entryNum){
+     if(perSize <= 0 || (perSize & (perSize - 1)) != 0) return 0;  
+
 
     (*p) = malloc(sizeof(Memory_Pool));
     int totalSize = perSize * entryNum + 4;
@@ -63,6 +65,7 @@ int MemoryPoolInit(Memory_Pool** p,int perSize,int entryNum){
     (*p)->entryNum = entryNum;
     (*p)->perSize = perSize;
     (*p)->manageEntry = malloc(entryNum*sizeof(Memory_Entry));
+    (*p)->hint = 0;
     MemoryEntryInit(*p);
     (*p)->freeEntry = malloc(entryNum*sizeof(bool));
     for(int i=0;i < entryNum;i++){
@@ -74,8 +77,23 @@ int MemoryPoolInit(Memory_Pool** p,int perSize,int entryNum){
 
 int MemoryPoolAlloc(Memory_Pool* p,int needSize,void** ptr,int* notfull)
 {
+    const int totalSize = needSize + 4;
     *notfull = 0;
-    bool isFull = true;
+    
+    int h = p->hint;
+    if(h >= 0 && h < p->entryNum && p->freeEntry[h] == true &&
+       p->manageEntry[h].freeSize >= totalSize){
+        Memory_Entry* e = &p->manageEntry[h];
+        *ptr = (void*)e->allocPtr;
+       e->allocPtr += totalSize;
+       e->freeSize -= totalSize;
+       e->hadAllocNum++;
+       p->freeEntry[h] = (e->freeSize >= 1 + 4);//剩余不足以再来一个最小块才算满
+       *notfull = 1;
+       return 1;
+   }
+ 
+   bool isFull = true;
     for(int i = 0;i < p->entryNum;i++){
         if(p->freeEntry[i] == true){
             bool canPutInto = false;
@@ -85,6 +103,7 @@ int MemoryPoolAlloc(Memory_Pool* p,int needSize,void** ptr,int* notfull)
             if(canPutInto == true){
                 isFull = false;
                 *notfull = 1;
+                p->hint = i;
                 break;
             }
             
@@ -103,7 +122,7 @@ int MemoryPoolFree(Memory_Pool* p,void* ptr){
 
     int perSize = p->perSize;
     int gapSize = pt - p->beginPtr;
-    int whichEntry = gapSize / perSize;
+    int whichEntry = gapSize >> __builtin_ctz((unsigned)perSize);
     Memory_Entry* e = &(p->manageEntry[whichEntry]);
     bool Cleaned = false;
     MemoryEntryFree(e,&Cleaned);

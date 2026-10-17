@@ -20,6 +20,7 @@ typedef struct Memory_Pool{
     char* endPtr;
     Memory_Entry* manageEntry;
     bool* freeEntry;
+    int hint;
 
 }Memory_Pool;
 
