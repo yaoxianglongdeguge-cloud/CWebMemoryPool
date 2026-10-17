@@ -19,7 +19,8 @@ make -C test clean
 > 全部测试结果、方法学与结论汇总在 **`TEST_REPORT.md`**；
 > 性能优化分析（O1~O5、位图对照、推荐配置）在 **`PERF_REPORT.md`**；
 > O1/O2 的可应用补丁在 **`PATCH_O1_O2.md`**；
-> **cWeb 四个池的较优配置（含调用点改造清单）在 `CONFIG_CWEB.md`。**
+> **cWeb 四个池的较优配置（含调用点改造清单）在 `CONFIG_CWEB.md`**；
+> **一页交代全部结论请看 `SUMMARY.md`。**
 
 环境变量：`STRESS_THREADS`（默认 4）、`STRESS_OPS`（默认 1000000）、`BENCH_MUL`（默认 1）。
 单独跑压力测试（可选模式/线程/操作数/seed）：
