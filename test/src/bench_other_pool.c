@@ -97,9 +97,17 @@ static void mk_old_locked(PoolRef* r,int strips)
 static void mk_old_nolock(PoolRef* r,int strips)
 { r->name = "老池(去锁)"; r->kind = 1; r->h = NULL; OldNoLockPoolCreate(&r->h,7,7,strips,strips); }
 
-/* 新池：perSize 字节 × entries 个池 */
+/* 新池：perSize 字节 × entries 个池（perSize 必须是 2 的幂，见 MemoryPoolInit 的校验） */
 static void mk_new(PoolRef* r,int perSizeBytes,int entries)
-{ r->name = "新池"; r->kind = 2; r->h = NULL; MemoryPoolInit((Memory_Pool**)&r->h,perSizeBytes,entries); }
+{
+    r->name = "新池";
+    r->kind = 2;
+    r->h = NULL;
+    if(MemoryPoolInit((Memory_Pool**)&r->h,perSizeBytes,entries) != 1 || r->h == NULL){
+        printf("  [ERROR] MemoryPoolInit(perSize=%d, entries=%d) 失败（perSize 需为 2 的幂）\n",
+               perSizeBytes,entries);
+    }
+}
 
 /*==========================================================================
  * A. 单块 申请+释放：按“同一逻辑块大小”对比（老池按 KB 分级，1KB 是它最小条）
@@ -312,12 +320,17 @@ static void case_footprint(void)
     for(int i = 0;i < n;i++) OldPoolFreeX(op,p[i],1024);
     OldPoolDestroy(op);
 
-    int perSize = n * (64 + GUARD) + 4;    /* 把整块调到刚好够，只比“同样数据占多少” */
+    int need = n * (64 + GUARD) + 4;       /* 刚好够放这些块 */
+    int perSize = 1;
+    while(perSize < need) perSize <<= 1;   /* MemoryPoolInit 要求 perSize 是 2 的幂 */
     Memory_Pool* np = NULL;
-    MemoryPoolInit(&np,perSize,1);
+    if(MemoryPoolInit(&np,perSize,1) != 1 || np == NULL){
+        printf("  [ERROR] MemoryPoolInit(perSize=%d) 失败\n",perSize);
+        return;
+    }
     long okNew = 0;
     for(int i = 0;i < n;i++){ p[i] = NULL; MemoryPoolAlloc(np,64,&p[i],&nf); if(nf == 1 && p[i]) okNew++; }
-    printf("  新池: 数据区 %ld B（%dB/块 = 64B + %dB 护栏），整块按 perSize=%d 预留，成功 %ld/%d\n",
+    printf("  新池: 数据区 %ld B（%dB/块 = 64B + %dB 护栏），整块按 perSize=%d 预留（2 的幂，够装下即可），成功 %ld/%d\n",
            (long)n * (64 + GUARD),64 + GUARD,GUARD,perSize,okNew,n);
     for(int i = 0;i < n;i++) MemoryPoolFree(np,p[i]);
     local_destroy(np);
@@ -428,11 +441,11 @@ static void case_mutex_cost(void)
 }
 
 /*==========================================================================
- * G. 高压·同预算（约 15MB）下的容量上限：一直申请直到 notfull=0
+ * G. 高压·同预算（约 16MiB）下的容量上限：一直申请直到 notfull=0
  *========================================================================*/
 static void case_capacity(void)
 {
-    printf("\n== G. 高压·同预算（约 15MB）下的容量上限：一直申请直到 notfull=0 ==\n");
+    printf("\n== G. 高压·同预算（约 16MiB）下的容量上限：一直申请直到 notfull=0 ==\n");
     printf("  %-24s | %-6s %14s   %s\n","池/配置","请求","并发块数上限","备注");
 
     struct { const char* label; int bytes; } rows[] = {{"1KB",1024},{"64KB",65536}};
@@ -473,7 +486,7 @@ static void case_capacity(void)
         }
 
         PoolRef b;
-        mk_new(&b,15 * 1024 * 1024,1);               /* 同样 ~15MB 预算 */
+        mk_new(&b,16 * 1024 * 1024,1);               /* 同样 ~16MiB 预算 */
         b.name = "新池";
         n = 0;
         while(n < 400000){
@@ -481,8 +494,8 @@ static void case_capacity(void)
             if(nf != 1) break;
             ptrs[n++] = ptr;
         }
-        printf("  %-24s | %-6s %14ld   预分配 15MB（单池上限 = perSize-4）\n",
-               "新池 (15MB × 1 池)",rows[r].label,n);
+        printf("  %-24s | %-6s %14ld   预分配 16MiB（单池上限 = perSize-4）\n",
+               "新池 (16MB × 1 池)",rows[r].label,n);
         for(long i = 0;i < n;i++) pr_free(&b,ptrs[i],bytes);
         pr_destroy(&b);
     }
@@ -505,14 +518,14 @@ static void case_random_pressure(void)
 {
     const long OPS = 5000000L;
     const long MAXLIVE = 400000L;
-    printf("\n== H. 高压·随机交错释放（同预算 ~15MB，请求 64B~1KB 随机，各 %ld 次操作）==\n",OPS);
+    printf("\n== H. 高压·随机交错释放（同预算 ~16MiB，请求 64B~1KB 随机，各 %ld 次操作）==\n",OPS);
     printf("  规则：60%% 概率申请、40%% 释放（随机挑一个在用块），最后全部释放\n");
     printf("  %-14s | %12s %12s %9s %14s\n","池","峰值并发块","降级次数","降级率","吞吐(万ops/s)");
 
     PoolRef refs[3];
     mk_old_locked(&refs[0],120);
     mk_old_nolock(&refs[1],120);
-    mk_new(&refs[2],15 * 1024 * 1024,1);
+    mk_new(&refs[2],16 * 1024 * 1024,1);
     refs[2].name = "新池";
 
     void** ptrs = malloc(sizeof(void*) * MAXLIVE);
@@ -649,7 +662,7 @@ static void case_threads3(void)
 }
 
 /*==========================================================================
- * J. 容量利用率：给同样 ~15MB 预算，看各池能同时服务多少“数据”
+ * J. 容量利用率：给同样 ~16MiB 预算，看各池能同时服务多少“数据”
  *    （老池的初始化属性在这里被授权调参，用来找它的上限）
  *========================================================================*/
 static long old_prealloc_bytes(void* p)
@@ -745,24 +758,24 @@ static void case_utilization(void)
        * 否则它自己的空闲栈会被写爆（见 ASAN 实测），所以 strip_num_future 要一起放大 */
       OldPoolCreate(&r.h,1,1,15240,15240);
       util_one("老池 (1,1,15240,15240) 调参", &r,load1KB,1); OldPoolDestroy(r.h); }
-    { PoolRef r; mk_new(&r,15 * 1024 * 1024,1); r.name = "新池";
-      util_one("新池 (15MB × 1 池)", &r,load1KB,1); pr_destroy(&r); }
+    { PoolRef r; mk_new(&r,16 * 1024 * 1024,1); r.name = "新池";
+      util_one("新池 (16MB × 1 池)", &r,load1KB,1); pr_destroy(&r); }
 
     printf("\n  负载②：cWeb 真实请求形态（63KB 头 + 70KB 打包 + 4×1KB）\n");
     { PoolRef r; mk_old_locked(&r,120);
       util_one("老池 (7,7,200,120) 线上", &r,loadWeb,6); pr_destroy(&r); }
     { PoolRef r; mk_old_locked(&r,1200);           /* 调参：预算 ×10（栈槽也要一起放大） */
       util_one("老池 (7,7,1250,1200) 调参", &r,loadWeb,6); pr_destroy(&r); }
-    { PoolRef r; mk_new(&r,15 * 1024 * 1024,1); r.name = "新池";
-      util_one("新池 (15MB × 1 池)", &r,loadWeb,6); pr_destroy(&r); }
+    { PoolRef r; mk_new(&r,16 * 1024 * 1024,1); r.name = "新池";
+      util_one("新池 (16MB × 1 池)", &r,loadWeb,6); pr_destroy(&r); }
     { PoolRef r; mk_new(&r,1024 * 1024,15); r.name = "新池";
       util_one("新池 (1MB × 15 池)", &r,loadWeb,6); pr_destroy(&r); }
 
     printf("\n  负载③：每请求 32KB + 4×1KB（全部留在池内，避免 malloc 干扰）\n");
     { PoolRef r; mk_old_locked(&r,120);
       util_one("老池 (7,7,200,120) 线上", &r,loadIn,5); pr_destroy(&r); }
-    { PoolRef r; mk_new(&r,15 * 1024 * 1024,1); r.name = "新池";
-      util_one("新池 (15MB × 1 池)", &r,loadIn,5); pr_destroy(&r); }
+    { PoolRef r; mk_new(&r,16 * 1024 * 1024,1); r.name = "新池";
+      util_one("新池 (16MB × 1 池)", &r,loadIn,5); pr_destroy(&r); }
 
     printf("\n  说明：老池预分配 = 每级条数 × Σ(前 init_max 级的大小)——它只能“每级一样多”，\n");
     printf("        无法按负载分布给不同级配不同条数（API 不支持），这是它的结构性上限。\n");
@@ -786,35 +799,35 @@ static void case_recommend(void)
 
     printf("\n  [1] worker txt_pool —— 每响应 [63KB 头 + 4KB 打包]\n");
     { PoolRef r; mk_old_locked(&r,120); util_one("老池 (7,7,200,120) 线上", &r,l_txt_small,2); OldPoolDestroy(r.h); }
-    { PoolRef r; mk_new(&r,256 * 1024,32); r.name = "新池";
-      util_one("新池 (256KB × 32 = 8MiB)", &r,l_txt_small,2); pr_destroy(&r); }
+    { PoolRef r; mk_new(&r,1024 * 1024,8); r.name = "新池";
+      util_one("新池 (1MB × 8 = 8MiB)", &r,l_txt_small,2); pr_destroy(&r); }
     printf("  [1b] 同上但打包区 48KB（大响应）\n");
     { PoolRef r; mk_old_locked(&r,120); util_one("老池 (7,7,200,120) 线上", &r,l_txt_big,2); OldPoolDestroy(r.h); }
-    { PoolRef r; mk_new(&r,256 * 1024,32); r.name = "新池";
-      util_one("新池 (256KB × 32 = 8MiB)", &r,l_txt_big,2); pr_destroy(&r); }
+    { PoolRef r; mk_new(&r,1024 * 1024,8); r.name = "新池";
+      util_one("新池 (1MB × 8 = 8MiB)", &r,l_txt_big,2); pr_destroy(&r); }
 
     printf("\n  [2] worker http_pool —— 每请求 [分析器 8KB]（1KB 请求）\n");
     { PoolRef r; r.name = "老池"; r.kind = 0; r.h = NULL; OldPoolCreate(&r.h,6,6,10,10);
       util_one("老池 (6,6,10,10) 线上", &r,l_whttp_small,1); OldPoolDestroy(r.h); }
-    { PoolRef r; mk_new(&r,64 * 1024,16); r.name = "新池";
-      util_one("新池 (64KB × 16 = 1MiB)", &r,l_whttp_small,1); pr_destroy(&r); }
+    { PoolRef r; mk_new(&r,256 * 1024,4); r.name = "新池";
+      util_one("新池 (256KB × 4 = 1MiB)", &r,l_whttp_small,1); pr_destroy(&r); }
     printf("  [2b] 同上但请求 4KB（分析器 24KB）\n");
     { PoolRef r; r.name = "老池"; r.kind = 0; r.h = NULL; OldPoolCreate(&r.h,6,6,10,10);
       util_one("老池 (6,6,10,10) 线上", &r,l_whttp_big,1); OldPoolDestroy(r.h); }
-    { PoolRef r; mk_new(&r,64 * 1024,16); r.name = "新池";
-      util_one("新池 (64KB × 16 = 1MiB)", &r,l_whttp_big,1); pr_destroy(&r); }
+    { PoolRef r; mk_new(&r,256 * 1024,4); r.name = "新池";
+      util_one("新池 (256KB × 4 = 1MiB)", &r,l_whttp_big,1); pr_destroy(&r); }
 
     printf("\n  [3] receiver http_pool —— 每请求 [请求原文 1KB]\n");
     { PoolRef r; r.name = "老池"; r.kind = 0; r.h = NULL; OldPoolCreate(&r.h,6,6,500,400);
       util_one("老池 (6,6,500,400) 线上", &r,l_rhttp,1); OldPoolDestroy(r.h); }
-    { PoolRef r; mk_new(&r,64 * 1024,64); r.name = "新池";
-      util_one("新池 (64KB × 64 = 4MiB)", &r,l_rhttp,1); pr_destroy(&r); }
+    { PoolRef r; mk_new(&r,1024 * 1024,4); r.name = "新池";
+      util_one("新池 (1MB × 4 = 4MiB)", &r,l_rhttp,1); pr_destroy(&r); }
 
     printf("\n  [4] receiver store_area —— 每连接 [暂存区 2KB + 发送指针区 4KB]\n");
     { PoolRef r; r.name = "老池"; r.kind = 0; r.h = NULL; OldPoolCreate(&r.h,10,6,500,400);
       util_one("老池 (10,6,500,400) 线上", &r,l_store,2); OldPoolDestroy(r.h); }
     { PoolRef r; mk_new(&r,64 * 1024,64); r.name = "新池";
-      util_one("新池 (64KB × 64 = 4MiB)", &r,l_store,2); pr_destroy(&r); }
+      util_one("新池 (64KB × 64 = 4MiB) ← 连接级长持有，用小池", &r,l_store,2); pr_destroy(&r); }
 
     printf("\n  注：老池 (10,6,500,400) 的第 7~10 级（64/128/256/512KB）条数为 0，\n");
     printf("      所以暂存区一旦扩容到 64KB 就会 notfull=0（线上隐患）。\n");

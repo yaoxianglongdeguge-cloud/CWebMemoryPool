@@ -82,6 +82,13 @@ int main(void)
     CHECK(layoutOk == 1, "4 个小池子首尾相接，游标/空闲量/计数/空闲标记初始化正确");
     local_destroy(pool);
 
+    /* 初始化契约（O1 用移位代替除法后新增的约束）：perSize 必须是 2 的幂，否则拒绝 */
+    Memory_Pool* bad = NULL;
+    CHECK(MemoryPoolInit(&bad, 1000, 4) == 0, "perSize 非 2 的幂（1000）→ MemoryPoolInit 返回 0");
+    CHECK(bad == NULL, "被拒绝时不改写调用方的指针");
+    Memory_Pool* bad2 = NULL;
+    CHECK(MemoryPoolInit(&bad2, 0, 4) == 0, "perSize = 0 → MemoryPoolInit 返回 0");
+
     /*================ 2. 小池子内部 bump 追加 / 计数归零回收 ================*/
     Memory_Pool* a = NULL;
     MemoryPoolInit(&a, PER, 4);

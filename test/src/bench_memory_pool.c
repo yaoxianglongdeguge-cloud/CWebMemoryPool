@@ -269,10 +269,16 @@ static void bench_footprint(int n, int sz)
     void** ptrs = malloc(sizeof(void*) * (size_t)n);
     int notfull = 0;
     long bad = 0;
-    int perSize = (int)((long)n * (sz + GUARD) + 64);   /* 只申请刚好够用的整块 */
+    int need = (int)((long)n * (sz + GUARD) + 64);
+    int perSize = 1;
+    while(perSize < need) perSize <<= 1;   /* MemoryPoolInit 要求 perSize 是 2 的幂 */
 
     Memory_Pool* pool = NULL;
-    MemoryPoolInit(&pool, perSize, 1);
+    if(MemoryPoolInit(&pool,perSize,1) != 1 || pool == NULL){
+        printf("  [ERROR] MemoryPoolInit(perSize=%d) 失败\n",perSize);
+        free(ptrs);
+        return;
+    }
     for (int i = 0; i < n; i++) {
         ptrs[i] = NULL;
         MemoryPoolAlloc(pool, sz, &ptrs[i], &notfull);
